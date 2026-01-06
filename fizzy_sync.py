@@ -305,6 +305,7 @@ class Config:
     column_mapping: dict[str, str] = field(default_factory=dict)
     sync_options: dict[str, Any] = field(default_factory=dict)
     beads_path: Path = field(default_factory=lambda: Path("."))
+    self_healing_interval: int = 300  # seconds (default: 5 minutes)
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> Config:
@@ -336,6 +337,7 @@ class Config:
             column_mapping=columns,
             sync_options=sync,
             beads_path=Path(beads.get("path", ".")),
+            self_healing_interval=sync.get("self_healing_interval", 300),
         )
 
     @classmethod
@@ -932,20 +934,31 @@ class SyncEngine:
         self.mapper = mapper
         self.column_cache: dict[str, str] = {}
 
-    def sync_all(self, include_closed: bool = False, dry_run: bool = False) -> dict:
-        """Sync all issues from Beads to Fizzy."""
+    def sync_all(self, include_closed: bool = False, dry_run: bool = False, force_heal: bool = False) -> dict:
+        """Sync all issues from Beads to Fizzy.
+
+        Args:
+            include_closed: Include closed issues in sync
+            dry_run: Show what would be synced without making changes
+            force_heal: Self-healing mode - force sync all issues and count corrections
+
+        Returns:
+            Dict with created, updated, skipped, errors counts, and corrections (for self-healing)
+        """
         if not dry_run:
             self._ensure_columns_exist()
 
         issues = self.reader.all_issues(include_closed=include_closed)
-        results = {"created": 0, "updated": 0, "skipped": 0, "errors": []}
+        results = {"created": 0, "updated": 0, "skipped": 0, "errors": [], "corrections": 0}
 
         for issue in issues:
-            result = self.sync_issue(issue, dry_run=dry_run)
+            result = self.sync_issue(issue, dry_run=dry_run, force_heal=force_heal)
             if result["action"] == "created":
                 results["created"] += 1
             elif result["action"] == "updated":
                 results["updated"] += 1
+                if result.get("was_drift"):
+                    results["corrections"] += 1
             elif result["action"] == "skipped":
                 results["skipped"] += 1
             elif result["action"] == "error":
@@ -953,13 +966,22 @@ class SyncEngine:
 
         return results
 
-    def sync_issue(self, issue: dict, dry_run: bool = False) -> dict:
-        """Sync a single issue."""
+    def sync_issue(self, issue: dict, dry_run: bool = False, force_heal: bool = False) -> dict:
+        """Sync a single issue.
+
+        Args:
+            issue: Beads issue dict
+            dry_run: Show what would be synced without making changes
+            force_heal: Self-healing mode - force update and check for drift
+
+        Returns:
+            Dict with action taken and metadata (including was_drift for corrections)
+        """
         beads_id = issue["id"]
         checksum = self._calculate_checksum(issue)
 
-        # Skip if unchanged
-        if self.state.checksum_for(beads_id) == checksum:
+        # In normal mode, skip if unchanged. In heal mode, always check.
+        if not force_heal and self.state.checksum_for(beads_id) == checksum:
             return {"action": "skipped", "beads_id": beads_id, "reason": "unchanged"}
 
         if dry_run:
@@ -974,12 +996,32 @@ class SyncEngine:
             column_id = self._get_column_id(column_name)
 
             if card_number := self.state.card_number_for(beads_id):
+                # For self-healing, check if Fizzy card has drifted from expected state
+                was_drift = False
+                card_deleted = False
+                if force_heal:
+                    drift_result = self._check_drift(card_number, issue, column_name)
+                    was_drift = drift_result.get("was_drift", False)
+                    card_deleted = drift_result.get("card_deleted", False)
+
+                # If card was deleted in Fizzy, recreate it
+                if card_deleted:
+                    card_number = self._create_card(issue, card_data, column_id)
+                    self.state.record_sync(beads_id, card_number, checksum)
+                    return {
+                        "action": "created",
+                        "beads_id": beads_id,
+                        "card_number": card_number,
+                        "was_drift": True,  # Deletion counts as drift
+                    }
+
                 self._update_card(card_number, issue, card_data, column_id)
                 self.state.record_sync(beads_id, card_number, checksum)
                 return {
                     "action": "updated",
                     "beads_id": beads_id,
                     "card_number": card_number,
+                    "was_drift": was_drift,
                 }
             else:
                 card_number = self._create_card(issue, card_data, column_id)
@@ -991,6 +1033,39 @@ class SyncEngine:
                 }
         except Exception as e:
             return {"action": "error", "beads_id": beads_id, "error": str(e)}
+
+    def _check_drift(self, card_number: int, issue: dict, expected_column: str | None) -> dict:
+        """Check if a Fizzy card has drifted from expected state.
+
+        Returns dict with:
+            was_drift: True if drift was detected
+            card_deleted: True if card was deleted in Fizzy
+        """
+        try:
+            card = self.client.get_card(card_number)
+            if not card:
+                # Card was deleted in Fizzy - will be recreated, counts as drift
+                console.print(f"    [magenta][HEAL][/magenta] Card #{card_number} deleted in Fizzy, recreating")
+                return {"was_drift": True, "card_deleted": True}
+
+            # Check column drift
+            current_column = card.get("column", {}).get("name") if card.get("column") else None
+            if expected_column and current_column != expected_column:
+                console.print(f"    [magenta][HEAL][/magenta] Card #{card_number} drifted (column: {current_column} → {expected_column})")
+                return {"was_drift": True, "card_deleted": False}
+
+            # Check closed state drift
+            is_closed = card.get("closed", False)
+            should_be_closed = issue["status"] == "closed"
+            if is_closed != should_be_closed:
+                state_msg = "open → closed" if should_be_closed else "closed → open"
+                console.print(f"    [magenta][HEAL][/magenta] Card #{card_number} drifted (state: {state_msg})")
+                return {"was_drift": True, "card_deleted": False}
+
+            return {"was_drift": False, "card_deleted": False}
+        except Exception:
+            # If we can't fetch card state, assume no drift to avoid false positives
+            return {"was_drift": False, "card_deleted": False}
 
     def _ensure_columns_exist(self) -> None:
         """Create missing columns (Doing, Blocked).
@@ -1139,6 +1214,7 @@ sync:
   include_closed: false
   priority_as_tag: true
   type_as_tag: true
+  self_healing_interval: 300  # seconds (default: 5 min, 0 to disable)
 
 beads:
   path: "."
@@ -1495,6 +1571,7 @@ sync:
   include_closed: false
   priority_as_tag: true
   type_as_tag: true
+  self_healing_interval: 300  # seconds (5 min, 0 to disable)
 
 beads:
   path: "."
@@ -1815,30 +1892,66 @@ def _start_background_watcher(api_token: str | None = None) -> None:
         console.print("[dim]Run manually with: bizzy watch[/dim]")
 
 
-def _run_watch_loop(config: Config, verbose: bool = False) -> None:
-    """Run the watch loop with given config (shared by wizard and cmd_watch)."""
+def _run_watch_loop(config: Config, verbose: bool = False, heal_interval: int | None = None) -> None:
+    """Run the watch loop with given config (shared by wizard and cmd_watch).
+
+    Args:
+        config: The sync configuration
+        verbose: Whether to show verbose output
+        heal_interval: Self-healing interval in seconds (None = use config, 0 = disabled)
+    """
     from watchfiles import watch
 
     beads_path = config.beads_path
     db_path = beads_path / ".beads" / "beads.db"
 
+    # Determine heal interval: CLI arg overrides config
+    if heal_interval is None:
+        heal_interval = config.self_healing_interval
+
     console.print("[cyan]Watching for beads changes...[/cyan]")
     console.print(f"  Database: {db_path}")
+    if heal_interval > 0:
+        console.print(f"  Self-healing: every {heal_interval}s")
+    else:
+        console.print("  Self-healing: disabled")
     console.print("  Press Ctrl+C to stop\n")
 
     # Do initial sync
     console.print("[dim]Running initial sync...[/dim]")
-    _run_sync(config, quiet=not verbose)
+    _run_sync(config, quiet=not verbose, is_heal=False)
 
-    # Watch for changes
+    # Track last heal time
+    last_heal = time.time()
+
+    # Watch for changes with timeout for self-healing
     try:
-        for changes in watch(beads_path / ".beads", watch_filter=lambda _, path: path.endswith(('beads.db', 'issues.jsonl'))):
-            # Debounce: watchfiles already batches rapid changes
-            changed_files = [str(path) for _, path in changes]
+        # Use rust_timeout to periodically check for self-healing
+        # When timeout occurs, watchfiles yields empty changes
+        check_interval = min(heal_interval, 30) if heal_interval > 0 else 30
 
-            if any('beads.db' in f or 'issues.jsonl' in f for f in changed_files):
-                console.print(f"\n[dim]{datetime.now().strftime('%H:%M:%S')}[/dim] Change detected, syncing...")
-                _run_sync(config, quiet=not verbose)
+        for changes in watch(
+            beads_path / ".beads",
+            watch_filter=lambda _, path: path.endswith(('beads.db', 'issues.jsonl')),
+            rust_timeout=check_interval * 1000,  # milliseconds
+            yield_on_timeout=True,
+        ):
+            now = time.time()
+
+            # Check if we have actual file changes
+            if changes:
+                changed_files = [str(path) for _, path in changes]
+                if any('beads.db' in f or 'issues.jsonl' in f for f in changed_files):
+                    console.print(f"\n[dim]{datetime.now().strftime('%H:%M:%S')}[/dim] Change detected, syncing...")
+                    _run_sync(config, quiet=not verbose, is_heal=False)
+                    last_heal = now  # Reset heal timer on manual sync
+
+            # Self-healing check (independent of file changes)
+            if heal_interval > 0 and (now - last_heal) >= heal_interval:
+                console.print(f"\n[dim]{datetime.now().strftime('%H:%M:%S')}[/dim] [magenta][HEAL][/magenta] Running self-healing sync...")
+                _run_sync(config, quiet=not verbose, is_heal=True)
+                last_heal = now
+
     except KeyboardInterrupt:
         console.print("\n[yellow]Watch stopped.[/yellow]")
 
@@ -1863,11 +1976,20 @@ def cmd_watch(args: argparse.Namespace) -> None:
         console.print(f"[red]Beads database not found at {db_path}[/red]")
         return
 
-    _run_watch_loop(config, verbose=args.verbose)
+    # Get heal_interval from CLI arg (may be None to use config default)
+    heal_interval = getattr(args, 'heal_interval', None)
+    _run_watch_loop(config, verbose=args.verbose, heal_interval=heal_interval)
 
 
-def _run_sync(config: Config, quiet: bool = False, include_closed: bool = True) -> None:
-    """Run sync with given config (helper for watch mode)."""
+def _run_sync(config: Config, quiet: bool = False, include_closed: bool = True, is_heal: bool = False) -> None:
+    """Run sync with given config (helper for watch mode).
+
+    Args:
+        config: Sync configuration
+        quiet: Suppress output unless there are changes
+        include_closed: Include closed issues in sync
+        is_heal: If True, this is a self-healing sync that should report drift corrections
+    """
     try:
         reader = BeadsReader(config.beads_path)
         client = FizzyClient(
@@ -1878,10 +2000,16 @@ def _run_sync(config: Config, quiet: bool = False, include_closed: bool = True) 
         engine = SyncEngine(config, client, reader, state, mapper)
 
         # Watch mode includes closed issues so they move to Done column
-        results = engine.sync_all(include_closed=include_closed)
+        # For self-healing, we force re-sync all issues regardless of checksum
+        results = engine.sync_all(include_closed=include_closed, force_heal=is_heal)
 
         total = results["created"] + results["updated"]
-        if total > 0 or not quiet:
+        corrections = results.get("corrections", 0)
+
+        if is_heal and corrections > 0:
+            # Show drift corrections during self-healing
+            console.print(f"  [magenta][HEAL][/magenta] Self-healing complete: {corrections} correction(s)")
+        elif total > 0 or not quiet:
             console.print(f"  [green]Synced: {results['created']} created, {results['updated']} updated, {results['skipped']} skipped[/green]")
 
         if results["errors"]:
@@ -1985,6 +2113,12 @@ def main() -> None:
         "--verbose",
         action="store_true",
         help="Show all sync output (not just changes)",
+    )
+    watch_parser.add_argument(
+        "--heal-interval",
+        type=int,
+        metavar="SECONDS",
+        help="Self-healing interval in seconds (default: 300, 0 to disable)",
     )
 
     args = parser.parse_args()
