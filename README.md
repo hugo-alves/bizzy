@@ -9,6 +9,7 @@ Sync issues from [Beads](https://github.com/steveyegge/beads) (git-backed CLI is
 ## Features
 
 - One-way sync from Beads to Fizzy
+- **Self-healing sync** — automatically detects and corrects Fizzy drift
 - Automatic column creation (Doing, Blocked)
 - Smart status mapping using Fizzy's built-in columns:
   - `open` → Maybe? (Fizzy's built-in inbox/backlog)
@@ -107,6 +108,7 @@ sync:
   include_closed: false      # Skip closed issues by default
   priority_as_tag: true      # Add P0-P4 tags
   type_as_tag: true          # Add bug/feature/task tags
+  self_healing_interval: 300 # Seconds between self-healing checks (0 to disable)
 
 # Beads source
 beads:
@@ -191,7 +193,16 @@ This is the best way to keep Fizzy in sync with Beads:
 - Runs initial sync on startup
 - Monitors `.beads/beads.db` for changes
 - Auto-syncs within seconds of any beads operation
+- Self-healing checks to correct Fizzy drift (every 5 minutes by default)
 - No manual intervention needed
+
+```bash
+# Custom heal interval (in seconds)
+uv run fizzy_sync.py watch --heal-interval 600
+
+# Disable self-healing
+uv run fizzy_sync.py watch --heal-interval 0
+```
 
 ## Data Mapping
 
@@ -223,6 +234,52 @@ Issue description here.
 
 [beads:bizzy-123]
 ```
+
+## Self-Healing Sync
+
+Fizzy is a **visibility tool**, not the source of truth. Beads is the authoritative source for all issue data. The self-healing feature ensures Fizzy always reflects the true state in Beads, even when cards are manually modified in Fizzy.
+
+### How It Works
+
+1. **Drift Detection** — Periodically compares each synced Fizzy card against the corresponding Beads issue
+2. **Auto-Correction** — When drift is detected (wrong column, outdated title/description, missing tags), the card is automatically updated to match Beads
+3. **Non-Destructive** — Only updates cards that have drifted; cards already in sync are untouched
+
+### What Gets Corrected
+
+| Drift Type | Example | Correction |
+|------------|---------|------------|
+| Column mismatch | Card moved manually in Fizzy | Moved back to correct column based on Beads status |
+| Title changed | Card renamed in Fizzy | Title restored from Beads |
+| Description edited | Notes added in Fizzy | Description restored (with `[beads:id]` marker) |
+| Tags modified | Priority tag removed | Tags restored from Beads priority/type/labels |
+
+### Configuration
+
+```yaml
+# In .fizzy-sync.yml
+sync:
+  self_healing_interval: 300  # Check every 5 minutes (default)
+```
+
+Or via command line:
+
+```bash
+# Custom interval
+uv run fizzy_sync.py watch --heal-interval 600  # Every 10 minutes
+
+# Disable self-healing
+uv run fizzy_sync.py watch --heal-interval 0
+```
+
+### Why Self-Healing?
+
+- **Fizzy is for visibility** — Drag cards around to explore, but changes don't stick
+- **Beads is the source of truth** — All real changes happen via `bd` commands
+- **No surprises** — The board always reflects actual issue state
+- **Team-friendly** — Multiple people can view Fizzy without corrupting data
+
+> **Tip:** If you need to change an issue's status, use `bd start`, `bd block`, or `bd close` in the terminal. The change will sync to Fizzy automatically.
 
 ## State File
 
