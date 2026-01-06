@@ -1,0 +1,32 @@
+# Fizzy-Beads Sync Configuration
+# TIP: Run 'bizzy wizard' for interactive setup that fills these automatically!
+# Or copy this file to .fizzy-sync.yml and customize manually.
+
+# Fizzy API connection
+fizzy:
+  base_url: https://app.fizzy.do  # Or your self-hosted URL
+  account_slug: "YOUR_ACCOUNT_SLUG"  # Found in URL: app.fizzy.do/{slug}/boards/...
+  api_token: ${FIZZY_API_TOKEN}  # Set via: export FIZZY_API_TOKEN="your-token"
+
+# Target board
+board:
+  id: "YOUR_BOARD_ID"  # Found in URL: app.fizzy.do/.../boards/{id}
+
+# Status -> Column mapping (only active work states need custom columns)
+# - "open" stays in Maybe? (Fizzy's built-in inbox = your backlog)
+# - "closed" goes to Done (Fizzy's built-in)
+columns:
+  in_progress: Doing
+  blocked: Blocked
+
+# Sync options
+sync:
+  auto_triage: true          # Move cards to columns automatically
+  auto_create_columns: true  # Create missing columns
+  include_closed: false      # Skip closed issues by default
+  priority_as_tag: true      # Add P0-P4 tags
+  type_as_tag: true          # Add bug/feature/task/epic/chore tags
+
+# Beads source (defaults to current directory)
+beads:
+  path: "."
