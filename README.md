@@ -4,6 +4,10 @@ Sync issues from [Beads](https://github.com/steveyegge/beads) (git-backed CLI is
 
 **Let AI agents visualize their work on a Kanban board.**
 
+<p align="center">
+  <img src="assets/hero.png" alt="AI agent syncing work to a Kanban board" width="800">
+</p>
+
 📖 **[Complete Setup Guide](SETUP.md)** | 🏗️ **[Architecture Overview](ARCHITECTURE.md)**
 
 *This is my first open-source project—feedback, suggestions, and help are very welcome.*
