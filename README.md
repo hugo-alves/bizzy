@@ -6,6 +6,8 @@ Sync issues from [Beads](https://github.com/steveyegge/beads) (git-backed CLI is
 
 📖 **[Complete Setup Guide](SETUP.md)** | 🏗️ **[Architecture Overview](ARCHITECTURE.md)**
 
+*This is my first open-source project—feedback, suggestions, and help are very welcome.*
+
 ## Features
 
 - One-way sync from Beads to Fizzy
