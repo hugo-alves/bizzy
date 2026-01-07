@@ -77,6 +77,7 @@ def mock_client():
     client.close_card.return_value = None
     client.reopen_card.return_value = None
     client.toggle_tag.return_value = None
+    client.get_card.return_value = {"tags": []}
     return client
 
 

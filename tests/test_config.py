@@ -161,7 +161,8 @@ beads:
 
         config = Config.load(config_file)
 
-        assert config.beads_path == Path("../other-project")
+        expected = (config_file.parent / "../other-project").resolve()
+        assert config.beads_path == expected
 
     def test_find_config_file_in_current_dir(self, tmp_path, monkeypatch):
         """Test finding config in current directory."""

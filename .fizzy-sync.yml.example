@@ -26,6 +26,7 @@ sync:
   include_closed: false      # Skip closed issues by default
   priority_as_tag: true      # Add P0-P4 tags
   type_as_tag: true          # Add bug/feature/task/epic/chore tags
+  self_healing_interval: 300 # Seconds between self-healing checks (0 to disable)
 
 # Beads source (defaults to current directory)
 beads:

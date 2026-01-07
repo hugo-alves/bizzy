@@ -11,7 +11,7 @@ If you just want to get started quickly:
 cd /path/to/your/project
 
 # Run the interactive setup wizard
-uv run /path/to/bizzy/fizzy_sync.py wizard
+uv run bizzy wizard
 ```
 
 The wizard will guide you through:
@@ -36,16 +36,21 @@ You'll need:
 Beads is the issue tracker that AI agents use.
 
 ```bash
-# Install the beads CLI
-pip install beads
-# or
-uv tool install beads
+# Install bd (macOS/Linux)
+curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/main/scripts/install.sh | bash
+
+# Or Homebrew
+brew install steveyegge/beads/bd
+
+# Or npm
+npm install -g @beads/bd
+
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1 | iex
 
 # Verify installation
 bd --version
 ```
-
-**Alternative:** If you're using Claude Code, Beads may already be available as an MCP plugin.
 
 ## Step 2: Initialize Beads in Your Project
 
@@ -104,14 +109,19 @@ export FIZZY_API_TOKEN="your-token-here"
 
 ### Option A: Clone the repo
 ```bash
-git clone https://github.com/hugoalves/bizzy.git
+git clone https://github.com/hugo-alves/bizzy.git
 cd bizzy
 ```
 
 ### Option B: Download just the script
 ```bash
 # Download the sync script
-curl -O https://raw.githubusercontent.com/hugoalves/bizzy/main/fizzy_sync.py
+curl -O https://raw.githubusercontent.com/hugo-alves/bizzy/main/fizzy_sync.py
+```
+
+If you use the single-file script, run it like:
+```bash
+uv run fizzy_sync.py wizard
 ```
 
 ## Step 6: Initialize Bizzy Config
@@ -122,14 +132,14 @@ Navigate to your project (where `.beads/` exists):
 cd /path/to/your/project
 
 # Create the config file
-uv run /path/to/bizzy/fizzy_sync.py init
+uv run bizzy init
 ```
 
 This creates `.fizzy-sync.yml`:
 
 ```yaml
 fizzy:
-  base_url: http://localhost:3000    # ← Change to your Fizzy URL
+  base_url: https://fizzy.example.com  # ← Change to your Fizzy URL
   account_slug: "your-account"       # ← Change to your account slug
   api_token: ${FIZZY_API_TOKEN}      # ← Uses environment variable
 
@@ -158,7 +168,7 @@ beads:
 
 Your account slug is in the Fizzy URL when you're logged in:
 ```
-https://fizzy.example.com/897362094/boards/...
+https://fizzy.example.com/YOUR_ACCOUNT_SLUG/boards/...
                          ▲
                          └── This is your account slug
 ```
@@ -166,14 +176,14 @@ https://fizzy.example.com/897362094/boards/...
 ## Step 7: Test the Connection
 
 ```bash
-uv run /path/to/bizzy/fizzy_sync.py auth
+uv run bizzy auth
 ```
 
 Expected output:
 ```
 ✓ Connected!
   User: Your Name (your@email.com)
-  Account: Your Account (897362094)
+  Account: Your Account (YOUR_ACCOUNT_SLUG)
 ```
 
 If it fails:
@@ -186,16 +196,16 @@ If it fails:
 ### Option A: Create a New Board (Recommended)
 
 ```bash
-uv run /path/to/bizzy/fizzy_sync.py setup --new-board "My Project"
+uv run bizzy setup --new-board "My Project"
 ```
 
 Output:
 ```
 Creating board: My Project
-  ✓ Created! Board ID: 03fciv7v80pmuqn81be8aj8vg
+  ✓ Created! Board ID: YOUR_BOARD_ID
   Update .fizzy-sync.yml with:
     board:
-      id: "03fciv7v80pmuqn81be8aj8vg"
+      id: "YOUR_BOARD_ID"
 
 Creating custom columns...
   ✓ Doing (Lime)
@@ -209,7 +219,7 @@ Note: Open issues go to Maybe? (built-in), closed to Done (built-in).
 
 ```yaml
 board:
-  id: "03fciv7v80pmuqn81be8aj8vg"  # ← Paste here
+  id: "YOUR_BOARD_ID"  # ← Paste here
 ```
 
 ### Option B: Use an Existing Board
@@ -217,14 +227,14 @@ board:
 1. Go to the board in Fizzy
 2. Copy the board ID from the URL:
    ```
-   https://fizzy.example.com/897362094/boards/03fcid9iealth0x5s199b55q4
+   https://fizzy.example.com/YOUR_ACCOUNT_SLUG/boards/YOUR_BOARD_ID
                                                ▲
                                                └── This is the board ID
    ```
 3. Update `.fizzy-sync.yml` with the board ID
 4. Run setup to add missing columns:
    ```bash
-   uv run /path/to/bizzy/fizzy_sync.py setup
+   uv run bizzy setup
    ```
 
 ## Step 9: Run Your First Sync
@@ -238,7 +248,7 @@ bd create "Test issue from Beads" --type task --priority 2
 ### Sync to Fizzy:
 
 ```bash
-uv run /path/to/bizzy/fizzy_sync.py sync
+uv run bizzy sync
 ```
 
 Output:
@@ -261,7 +271,7 @@ Open your Fizzy board in the browser - you should see the card in the "Maybe?" c
 For automatic syncing, run watch mode:
 
 ```bash
-uv run /path/to/bizzy/fizzy_sync.py watch
+uv run bizzy watch
 ```
 
 Output:
@@ -282,10 +292,10 @@ To keep watch mode running in the background:
 
 ```bash
 # Using nohup
-nohup uv run /path/to/bizzy/fizzy_sync.py watch > bizzy.log 2>&1 &
+nohup uv run bizzy watch > bizzy.log 2>&1 &
 
 # Or using tmux/screen
-tmux new-session -d -s bizzy 'uv run /path/to/bizzy/fizzy_sync.py watch'
+tmux new-session -d -s bizzy 'uv run bizzy watch'
 ```
 
 ## Quick Reference
@@ -294,25 +304,25 @@ Once set up, here are the common commands:
 
 ```bash
 # Manual sync
-uv run fizzy_sync.py sync
+uv run bizzy sync
 
 # Watch mode (auto-sync)
-uv run fizzy_sync.py watch
+uv run bizzy watch
 
 # Check status
-uv run fizzy_sync.py status
+uv run bizzy status
 
 # Include closed issues
-uv run fizzy_sync.py sync --include-closed
+uv run bizzy sync --include-closed
 
 # Dry run (preview without syncing)
-uv run fizzy_sync.py sync --dry-run
+uv run bizzy sync --dry-run
 ```
 
 ## Troubleshooting
 
 ### "Config file not found"
-Run `fizzy_sync.py init` in your project directory.
+Run `bizzy init` in your project directory.
 
 ### "API token not set"
 ```bash
@@ -323,10 +333,10 @@ export FIZZY_API_TOKEN="your-token"
 Run `bd init` in your project directory.
 
 ### Cards not moving to correct columns
-Run `fizzy_sync.py setup` to ensure all columns exist.
+Run `bizzy setup` to ensure all columns exist.
 
 ### Duplicate columns on board
-Run `fizzy_sync.py setup --reset --force` to clean up.
+Run `bizzy setup --reset --force` to clean up.
 
 ## File Locations Summary
 

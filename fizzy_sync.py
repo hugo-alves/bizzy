@@ -260,8 +260,12 @@ def setup_board(
                     pass  # Continue on error
 
         # Create columns for active work states
-        beads_columns = ["Doing", "Blocked"]
-        for name in beads_columns:
+        columns_to_ensure = {
+            name
+            for name in mapper.column_mapping.values()
+            if name and name not in Mapper.BUILT_IN_COLUMNS
+        }
+        for name in sorted(columns_to_ensure):
             existing = client.list_columns(board_id)
             existing_names = [c.get("name") for c in existing]
             if name in existing_names:
@@ -313,9 +317,12 @@ class Config:
         if config_path is None:
             config_path = cls.find_config_file()
 
+        if config_path is not None:
+            config_path = Path(config_path).expanduser()
+
         if config_path is None or not config_path.exists():
             raise FileNotFoundError(
-                "Config file not found. Run 'fizzy-sync init' to create one."
+                "Config file not found. Run 'bizzy init' (or 'uv run fizzy_sync.py init')."
             )
 
         content = config_path.read_text()
@@ -329,6 +336,10 @@ class Config:
         sync = data.get("sync", {})
         beads = data.get("beads", {})
 
+        beads_path = Path(beads.get("path", ".")).expanduser()
+        if not beads_path.is_absolute():
+            beads_path = (config_path.parent / beads_path).resolve()
+
         return cls(
             fizzy_base_url=fizzy.get("base_url", "http://localhost:3000"),
             fizzy_account_slug=str(fizzy.get("account_slug", "")),
@@ -336,7 +347,7 @@ class Config:
             board_id=board.get("id", ""),
             column_mapping=columns,
             sync_options=sync,
-            beads_path=Path(beads.get("path", ".")),
+            beads_path=beads_path,
             self_healing_interval=sync.get("self_healing_interval", 300),
         )
 
@@ -689,21 +700,27 @@ class BeadsReader:
         conn.row_factory = sqlite3.Row
         return conn
 
-    def _get_blocked_issue_ids(self, conn: sqlite3.Connection) -> set[str]:
+    def _get_blocked_issue_ids(self, conn: sqlite3.Connection) -> set[str] | None:
         """Get IDs of all issues that are blocked by dependencies."""
         try:
             cursor = conn.execute("SELECT issue_id FROM blocked_issues_cache")
             return {row[0] for row in cursor.fetchall()}
         except sqlite3.OperationalError:
             # Table may not exist in older beads versions
-            return set()
+            return None
 
-    def _apply_blocked_status(self, issues: list[dict], blocked_ids: set[str]) -> list[dict]:
+    def _apply_blocked_status(
+        self, issues: list[dict], blocked_ids: set[str] | None
+    ) -> list[dict]:
         """Override status to 'blocked' for issues in the blocked cache.
 
         Also handles the reverse: if an issue has status='blocked' but is no longer
         in the blocked cache, it should effectively be 'open'.
         """
+        if blocked_ids is None:
+            # Older beads versions don't have the cache; leave statuses untouched.
+            return issues
+
         for issue in issues:
             issue_id = issue["id"]
             current_status = issue["status"]
@@ -779,6 +796,8 @@ class BeadsReader:
 class Mapper:
     """Transform data between Beads and Fizzy formats."""
 
+    BUILT_IN_COLUMNS = {"Maybe?", "Not Now", "Done"}
+
     COLUMN_COLORS = {
         "Doing": "var(--color-card-4)",  # Lime
         "Blocked": "var(--color-card-8)",  # Pink
@@ -812,14 +831,20 @@ class Mapper:
         """Get color CSS variable for a column."""
         return self.COLUMN_COLORS.get(column_name, "var(--color-card-default)")
 
-    def tags_for_issue(self, issue: dict) -> list[str]:
+    def tags_for_issue(
+        self,
+        issue: dict,
+        include_priority: bool = True,
+        include_type: bool = True,
+        include_labels: bool = True,
+    ) -> list[str]:
         """Get tags to apply to a card based on issue metadata."""
         tags = []
-        if issue.get("priority") is not None:
+        if include_priority and issue.get("priority") is not None:
             tags.append(f"P{issue['priority']}")
-        if issue.get("issue_type"):
+        if include_type and issue.get("issue_type"):
             tags.append(issue["issue_type"])
-        if issue.get("labels"):
+        if include_labels and issue.get("labels"):
             labels = issue["labels"]
             if isinstance(labels, str):
                 try:
@@ -945,7 +970,7 @@ class SyncEngine:
         Returns:
             Dict with created, updated, skipped, errors counts, and corrections (for self-healing)
         """
-        if not dry_run:
+        if not dry_run and self.config.sync_options.get("auto_triage", True):
             self._ensure_columns_exist()
 
         issues = self.reader.all_issues(include_closed=include_closed)
@@ -992,7 +1017,11 @@ class SyncEngine:
 
         try:
             card_data = self.mapper.beads_to_fizzy_card(issue)
-            column_name = self.mapper.column_for_status(issue["status"])
+            auto_triage = self.config.sync_options.get("auto_triage", True)
+            if auto_triage and not self.column_cache:
+                self._ensure_columns_exist()
+
+            column_name = self.mapper.column_for_status(issue["status"]) if auto_triage else None
             column_id = self._get_column_id(column_name)
 
             if card_number := self.state.card_number_for(beads_id):
@@ -1048,11 +1077,12 @@ class SyncEngine:
                 console.print(f"    [magenta][HEAL][/magenta] Card #{card_number} deleted in Fizzy, recreating")
                 return {"was_drift": True, "card_deleted": True}
 
-            # Check column drift
-            current_column = card.get("column", {}).get("name") if card.get("column") else None
-            if expected_column and current_column != expected_column:
-                console.print(f"    [magenta][HEAL][/magenta] Card #{card_number} drifted (column: {current_column} → {expected_column})")
-                return {"was_drift": True, "card_deleted": False}
+            # Check column drift (only if auto-triage is enabled)
+            if self.config.sync_options.get("auto_triage", True):
+                current_column = card.get("column", {}).get("name") if card.get("column") else None
+                if expected_column and current_column != expected_column:
+                    console.print(f"    [magenta][HEAL][/magenta] Card #{card_number} drifted (column: {current_column} → {expected_column})")
+                    return {"was_drift": True, "card_deleted": False}
 
             # Check closed state drift
             is_closed = card.get("closed", False)
@@ -1068,12 +1098,15 @@ class SyncEngine:
             return {"was_drift": False, "card_deleted": False}
 
     def _ensure_columns_exist(self) -> None:
-        """Create missing columns (Doing, Blocked).
+        """Create missing columns for mapped active work states.
 
         Note: We only need columns for active work states:
         - "open" issues stay in Fizzy's built-in Maybe? (the inbox/backlog)
         - "closed" issues go to Fizzy's built-in Done
         """
+        if not self.config.sync_options.get("auto_triage", True):
+            return
+
         if not self.config.sync_options.get("auto_create_columns", True):
             # Just load existing columns
             existing = self.client.list_columns(self.config.board_id)
@@ -1083,7 +1116,12 @@ class SyncEngine:
         existing = self.client.list_columns(self.config.board_id)
         self.column_cache = {c["name"]: c["id"] for c in existing}
 
-        for name in ["Doing", "Blocked"]:
+        column_names = {
+            name
+            for name in self.mapper.column_mapping.values()
+            if name and name not in Mapper.BUILT_IN_COLUMNS
+        }
+        for name in sorted(column_names):
             if name not in self.column_cache:
                 color = self.mapper.color_for_column(name)
                 console.print(f"  Creating column: [cyan]{name}[/cyan]")
@@ -1105,7 +1143,7 @@ class SyncEngine:
         card_number = self._extract_card_number(response)
 
         # 2. Triage to column
-        if column_id:
+        if column_id and self.config.sync_options.get("auto_triage", True):
             self.client.triage_card(card_number, column_id)
 
         # 3. Handle closed status
@@ -1113,12 +1151,7 @@ class SyncEngine:
             self.client.close_card(card_number)
 
         # 4. Add tags
-        if self.config.sync_options.get("priority_as_tag", True) or self.config.sync_options.get("type_as_tag", True):
-            for tag in self.mapper.tags_for_issue(issue):
-                try:
-                    self.client.toggle_tag(card_number, tag)
-                except Exception:
-                    pass  # Tags may not exist, continue
+        self._apply_tags(card_number, issue, allow_blind_add=True)
 
         return card_number
 
@@ -1134,14 +1167,15 @@ class SyncEngine:
         )
 
         # 2. Move to correct column (or back to Maybe? if open)
-        if column_id:
-            self.client.triage_card(card_number, column_id)
-        elif issue["status"] == "open":
-            # "open" status means back to Maybe? (untriage)
-            try:
-                self.client.untriage_card(card_number)
-            except Exception:
-                pass  # May not be triaged
+        if self.config.sync_options.get("auto_triage", True):
+            if column_id:
+                self.client.triage_card(card_number, column_id)
+            elif issue["status"] == "open":
+                # "open" status means back to Maybe? (untriage)
+                try:
+                    self.client.untriage_card(card_number)
+                except Exception:
+                    pass  # May not be triaged
 
         # 3. Handle closed/reopened
         if issue["status"] == "closed":
@@ -1154,6 +1188,8 @@ class SyncEngine:
                 self.client.reopen_card(card_number)
             except Exception:
                 pass  # May not be closed
+
+        self._apply_tags(card_number, issue)
 
     def _calculate_checksum(self, issue: dict) -> str:
         """Calculate checksum for change detection."""
@@ -1171,9 +1207,65 @@ class SyncEngine:
             :16
         ]
 
-    def _get_column_id(self, column_name: str) -> str:
+    def _get_column_id(self, column_name: str | None) -> str:
         """Get column ID by name."""
+        if not column_name:
+            return ""
         return self.column_cache.get(column_name, "")
+
+    def _apply_tags(
+        self,
+        card_number: int,
+        issue: dict,
+        allow_blind_add: bool = False,
+    ) -> None:
+        """Apply tags to card without removing existing tags."""
+        tags = self.mapper.tags_for_issue(
+            issue,
+            include_priority=self.config.sync_options.get("priority_as_tag", True),
+            include_type=self.config.sync_options.get("type_as_tag", True),
+        )
+        if not tags:
+            return
+
+        if allow_blind_add:
+            existing_tags = set()
+        else:
+            existing_tags = self._get_existing_tags(card_number)
+            if existing_tags is None:
+                return
+
+        for tag in tags:
+            if tag not in existing_tags:
+                try:
+                    self.client.toggle_tag(card_number, tag)
+                except Exception:
+                    pass  # Tags may not exist, continue
+
+    def _get_existing_tags(self, card_number: int) -> set[str] | None:
+        """Fetch existing tag titles for a card, if available."""
+        try:
+            card = self.client.get_card(card_number)
+        except Exception:
+            return None
+
+        if not isinstance(card, dict):
+            return None
+
+        tag_items = card.get("tags") or card.get("taggings") or []
+        if not isinstance(tag_items, list):
+            return None
+
+        titles: set[str] = set()
+        for tag in tag_items:
+            if isinstance(tag, str):
+                titles.add(tag)
+            elif isinstance(tag, dict):
+                if "title" in tag:
+                    titles.add(tag["title"])
+                elif "name" in tag:
+                    titles.add(tag["name"])
+        return titles
 
     def _extract_card_number(self, response: dict) -> int:
         """Extract card number from API response."""
@@ -1286,28 +1378,26 @@ first so there's something to sync.[/dim]
         if not bd_installed:
             console.print("""[cyan]Step 1: Install Beads[/cyan]
 
-  pipx install beads-cli
+  [dim]macOS/Linux:[/dim]
+  curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/main/scripts/install.sh | bash
 
-  [dim]Or with pip:[/dim]
-  pip install beads-cli
+  [dim]Homebrew:[/dim]
+  brew install steveyegge/beads/bd
 
-  [dim]Or if you use Claude Code, install the Beads plugin:[/dim]
-  claude mcp add beads -- npx -y beads-mcp@latest
+  [dim]npm:[/dim]
+  npm install -g @beads/bd
+
+  [dim]Windows (PowerShell):[/dim]
+  irm https://raw.githubusercontent.com/steveyegge/beads/main/install.ps1 | iex
 """)
             console.print("""[cyan]Step 2: Initialize Beads in your project[/cyan]
 
   bd init
-
-  [dim]Or in Claude Code:[/dim]
-  /beads:init
 """)
         else:
             console.print("""[cyan]Initialize Beads in your project:[/cyan]
 
   bd init
-
-  [dim]Or if you're using Claude Code:[/dim]
-  /beads:init
 """)
 
         console.print("[dim]Then run this wizard again.[/dim]\n")
@@ -1632,7 +1722,7 @@ def cmd_init(args: argparse.Namespace) -> None:
         console.print(f"[green]Created {result.config_path}[/green]")
         console.print("\nNext steps:")
         console.print("  1. Set FIZZY_API_TOKEN environment variable")
-        console.print("  2. Run: uv run fizzy-sync.py auth")
+        console.print("  2. Run: bizzy auth  (or: uv run fizzy_sync.py auth)")
 
 
 def cmd_auth(args: argparse.Namespace) -> None:
@@ -1696,7 +1786,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
     client = FizzyClient(
         config.fizzy_base_url, config.fizzy_account_slug, config.fizzy_api_token
     )
-    mapper = Mapper()
+    mapper = Mapper(config.column_mapping)
 
     try:
         if args.new_board:

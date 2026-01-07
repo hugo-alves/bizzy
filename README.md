@@ -10,7 +10,7 @@ Sync issues from [Beads](https://github.com/steveyegge/beads) (git-backed CLI is
 
 - One-way sync from Beads to Fizzy
 - **Self-healing sync** — automatically detects and corrects Fizzy drift
-- Automatic column creation (Doing, Blocked)
+- Automatic column creation for active states (default: Doing, Blocked)
 - Smart status mapping using Fizzy's built-in columns:
   - `open` → Maybe? (Fizzy's built-in inbox/backlog)
   - `in_progress` → Doing (custom column)
@@ -39,6 +39,21 @@ Store the token securely:
 export FIZZY_API_TOKEN="your-token-here"
 ```
 
+## Quick Start (2 minutes)
+
+```bash
+git clone https://github.com/hugo-alves/bizzy.git
+cd bizzy
+
+# Optional: install deps for local dev
+uv sync
+
+# From your Beads project directory:
+uv run bizzy wizard
+```
+
+That’s it — the wizard sets up config, board, and your first sync.
+
 ## Quick Start
 
 ### Option 1: Interactive Wizard (Recommended for new users)
@@ -48,7 +63,7 @@ export FIZZY_API_TOKEN="your-token-here"
 cd /path/to/your/project
 
 # Run the interactive setup wizard
-uv run /path/to/fizzy_sync.py wizard
+uv run bizzy wizard
 ```
 
 The wizard guides you through the entire setup process interactively.
@@ -60,23 +75,23 @@ The wizard guides you through the entire setup process interactively.
 cd /path/to/your/project
 
 # Initialize config
-uv run /path/to/fizzy_sync.py init
+uv run bizzy init
 
 # Set your API token (see above)
 export FIZZY_API_TOKEN="your-token-here"
 
 # Test connection
-uv run /path/to/fizzy_sync.py auth
+uv run bizzy auth
 
 # Set up board with correct columns
-uv run /path/to/fizzy_sync.py setup --new-board "My Project"
+uv run bizzy setup --new-board "My Project"
 # Update .fizzy-sync.yml with the board ID shown
 
 # Sync issues
-uv run /path/to/fizzy_sync.py sync
+uv run bizzy sync
 
 # Or run in watch mode (recommended)
-uv run /path/to/fizzy_sync.py watch
+uv run bizzy watch
 ```
 
 ## Configuration
@@ -86,8 +101,8 @@ The `init` command creates `.fizzy-sync.yml` in the current directory:
 ```yaml
 # Fizzy API connection
 fizzy:
-  base_url: http://fizzy.localhost:3006
-  account_slug: "897362094"
+  base_url: https://fizzy.example.com
+  account_slug: "YOUR_ACCOUNT_SLUG"
   api_token: ${FIZZY_API_TOKEN}  # Use environment variable
 
 # Target board
@@ -122,8 +137,8 @@ beads:
 Create a new `.fizzy-sync.yml` configuration file.
 
 ```bash
-uv run fizzy_sync.py init
-uv run fizzy_sync.py init --force  # Overwrite existing config
+uv run bizzy init
+uv run bizzy init --force  # Overwrite existing config
 ```
 
 ### `auth`
@@ -131,7 +146,7 @@ uv run fizzy_sync.py init --force  # Overwrite existing config
 Test the API connection and display account info.
 
 ```bash
-uv run fizzy_sync.py auth
+uv run bizzy auth
 ```
 
 ### `setup`
@@ -140,13 +155,13 @@ Set up a Fizzy board for Beads sync. Creates the custom columns (Doing, Blocked)
 
 ```bash
 # Create a new board (recommended for fresh start)
-uv run fizzy_sync.py setup --new-board "My Project"
+uv run bizzy setup --new-board "My Project"
 
 # Reset existing board columns (removes duplicates)
-uv run fizzy_sync.py setup --reset --force
+uv run bizzy setup --reset --force
 
 # Just add missing columns (non-destructive)
-uv run fizzy_sync.py setup
+uv run bizzy setup
 ```
 
 **Note:** When creating a new board, update `.fizzy-sync.yml` with the board ID shown in the output.
@@ -156,7 +171,7 @@ uv run fizzy_sync.py setup
 Show sync status (Beads issue count, synced count, pending changes).
 
 ```bash
-uv run fizzy_sync.py status
+uv run bizzy status
 ```
 
 ### `sync`
@@ -165,16 +180,16 @@ Sync issues from Beads to Fizzy.
 
 ```bash
 # Sync all open issues
-uv run fizzy_sync.py sync
+uv run bizzy sync
 
 # Sync a specific issue
-uv run fizzy_sync.py sync --issue bizzy-123
+uv run bizzy sync --issue bizzy-123
 
 # Include closed issues
-uv run fizzy_sync.py sync --include-closed
+uv run bizzy sync --include-closed
 
 # Preview changes without syncing
-uv run fizzy_sync.py sync --dry-run
+uv run bizzy sync --dry-run
 ```
 
 ### `watch`
@@ -183,10 +198,10 @@ uv run fizzy_sync.py sync --dry-run
 
 ```bash
 # Start watching (runs until Ctrl+C)
-uv run fizzy_sync.py watch
+uv run bizzy watch
 
 # Verbose mode - show all sync output
-uv run fizzy_sync.py watch -v
+uv run bizzy watch -v
 ```
 
 This is the best way to keep Fizzy in sync with Beads:
@@ -198,10 +213,10 @@ This is the best way to keep Fizzy in sync with Beads:
 
 ```bash
 # Custom heal interval (in seconds)
-uv run fizzy_sync.py watch --heal-interval 600
+uv run bizzy watch --heal-interval 600
 
 # Disable self-healing
-uv run fizzy_sync.py watch --heal-interval 0
+uv run bizzy watch --heal-interval 0
 ```
 
 ## Data Mapping
@@ -224,6 +239,8 @@ uv run fizzy_sync.py watch --heal-interval 0
 - Priority: `P0`, `P1`, `P2`, `P3`, `P4`
 - Issue Type: `bug`, `feature`, `task`, `epic`, `chore`
 - Labels: Any custom labels from Beads
+
+**Note:** Tags are additive. Bizzy adds missing tags but does not remove existing tags.
 
 ### Beads ID Tracking
 
@@ -266,10 +283,10 @@ Or via command line:
 
 ```bash
 # Custom interval
-uv run fizzy_sync.py watch --heal-interval 600  # Every 10 minutes
+uv run bizzy watch --heal-interval 600  # Every 10 minutes
 
 # Disable self-healing
-uv run fizzy_sync.py watch --heal-interval 0
+uv run bizzy watch --heal-interval 0
 ```
 
 ### Why Self-Healing?
@@ -308,8 +325,8 @@ This file tracks:
 ### Create an alias
 
 ```bash
-alias fizzy-sync="uv run /path/to/fizzy_sync.py"
-fizzy-sync sync
+alias bizzy="uv run bizzy"
+bizzy sync
 ```
 
 ### Automate with git hooks
@@ -319,14 +336,14 @@ Add to `.git/hooks/post-commit`:
 ```bash
 #!/bin/bash
 export FIZZY_API_TOKEN="your-token"
-uv run /path/to/fizzy_sync.py sync --quiet
+uv run bizzy sync --quiet
 ```
 
 ## Troubleshooting
 
 ### "Config file not found"
 
-Run `fizzy_sync.py init` to create the config file.
+Run `bizzy init` to create the config file.
 
 ### "API token not set"
 
@@ -346,7 +363,7 @@ Check that the columns exist in Fizzy. If `auto_create_columns: true`, they shou
 
 ### Duplicate columns on board
 
-Use `fizzy_sync.py setup --reset --force` to clean up and recreate the standard Beads columns.
+Use `bizzy setup --reset --force` to clean up and recreate the standard Beads columns.
 
 ## Development
 
@@ -357,7 +374,7 @@ Use `fizzy_sync.py setup --reset --force` to clean up and recreate the standard 
 uv run --with pytest --with pytest-httpx pytest tests/ -v
 
 # Or with the dev dependencies from pyproject.toml
-uv sync --group dev
+uv sync --extra dev
 uv run pytest tests/ -v
 ```
 
